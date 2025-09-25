@@ -4,7 +4,7 @@ import  torch.nn.functional as F
 from    torch import nn
 from    geoopt.manifolds import PoincareBall
 
-
+from .base import BaseModel
 
 class  HGCN(MessagePassing):
     def __init__(self, in_channels, out_channels, 
@@ -136,7 +136,7 @@ class MultiLayerHGNN(torch.nn.Module):
         return x
 
 
-class HNMP(torch.nn.Module):
+class HNMP(BaseModel):
     def __init__(self, in_channels, out_channels, 
                  num_edge_types, num_node_types, 
                  patient_relations, ontology_relations,                 
@@ -189,29 +189,40 @@ class HNMP(torch.nn.Module):
 
         return scores
 
-    def compute_link_loss(self, node_emb, pos_edges, pos_types, 
-                                        neg_edges, neg_types, 
-                                        margin = 1.0):
-       
-        pos_scores = self.score_edges(node_emb, pos_edges, pos_types)
-        neg_scores = self.score_edges(node_emb, neg_edges, neg_types)
-        
-        # sample negatives to match positives if needed
-        if neg_scores.size(0) > pos_scores.size(0):
-            idx         = torch.randperm(neg_scores.size(0))[:pos_scores.size(0)]
-            neg_scores  = neg_scores[idx]
-        
-        target  = torch.ones_like(pos_scores)
-        loss    = F.margin_ranking_loss(pos_scores, neg_scores, target, 
-                                        margin=margin)
 
-        return loss
 
-    def compute_node_loss(self, node_logits, y, mask=None):
-        if mask is not None:
-            node_logits = node_logits[mask]
-            y = y[mask]
+if __name__ == "__main__":
+    """
+from models.hnmp_rgcn import *
 
-        loss    = F.cross_entropy(node_logits, y)       
 
-        return loss 
+if dataset == 'eicu':
+    patient_relations = ['http://ehrtoolkit.org/ontology/eICU/has_icd_diagnosis',
+                    'http://ehrtoolkit.org/ontology/eICU/has_lab_event',
+                    'http://ehrtoolkit.org/ontology/eICU/has_medication'
+    ]
+else:
+
+    patient_relations = [  'https://biomedit.ch/rdf/ehr-toolkit/has_diagnosis_code',
+    'https://biomedit.ch/rdf/ehr-toolkit/has_lab_code',
+    'https://biomedit.ch/rdf/ehr-toolkit/has_medication_code']
+
+
+ontology_relations = [ 'http://www.w3.org/2002/07/owl#sameAs' ,
+    'http://www.w3.org/2000/01/rdf-schema#subClassOf'
+]
+
+model = HNMP(in_channels, out_channels, 
+                num_edge_types = int(data.edge_type.max())+1, 
+                num_node_types = int(data.y.max())+1, 
+                patient_relations = patient_relations, 
+                ontology_relations = ontology_relations,                 
+                relation_dict = edge_dict, 
+                kappa_1    = 1, 
+                kappa_2    = 1,
+                num_layers = 1)
+
+optimizer = geoopt.optim.RiemannianAdam( model.parameters(),lr=0.01)
+
+
+                 """
