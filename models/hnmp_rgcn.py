@@ -4,7 +4,7 @@ import  torch.nn.functional as F
 from    torch import nn
 from    geoopt.manifolds import PoincareBall
 
-from .base import BaseModel
+from base import BaseModel, train_concurrent_prediction
 
 class  HGCN(MessagePassing):
     def __init__(self, in_channels, out_channels, 
@@ -192,37 +192,73 @@ class HNMP(BaseModel):
 
 
 if __name__ == "__main__":
-    """
-from models.hnmp_rgcn import *
 
 
-if dataset == 'eicu':
-    patient_relations = ['http://ehrtoolkit.org/ontology/eICU/has_icd_diagnosis',
-                    'http://ehrtoolkit.org/ontology/eICU/has_lab_event',
-                    'http://ehrtoolkit.org/ontology/eICU/has_medication'
-    ]
-else:
+    import geoopt
+    import pickle
+    import argparse
 
-    patient_relations = [  'https://biomedit.ch/rdf/ehr-toolkit/has_diagnosis_code',
-    'https://biomedit.ch/rdf/ehr-toolkit/has_lab_code',
-    'https://biomedit.ch/rdf/ehr-toolkit/has_medication_code']
+    parser = argparse.ArgumentParser(description='Script for Ontology-aligned model training.')
+    parser.add_argument('--datafile', type=str, default='mimic4_data.pk', help='Dataset file name')
+    parser.add_argument('--data_path', type=str, default='../data/', help='Path to data directory')
+    parser.add_argument('--learning_rate', type=float, default=1e-2, help='Learning rate for training')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
+    args = parser.parse_args()
+
+    dataset = args.datafile 
+    data_path = args.data_path
+    data_filename = data_path+dataset
+    learning_rate = args.learning_rate
+    epochs = args.epochs
+
+    with open(data_filename, "rb") as f:
+        loaded_data = pickle.load(f)
+
+    edge_dict           = loaded_data["edge_dict"]
+    data                = loaded_data["data"]
+    train_pos_edges     = loaded_data['train_pos_edges']
+    val_pos_edges       = loaded_data['val_pos_edges']
+    train_pos_types     = loaded_data['train_pos_types']
+    val_pos_types       = loaded_data['val_pos_types']
+    train_neg_edges     = loaded_data['train_neg_edges']
+    val_neg_edges       = loaded_data['val_neg_edges']
+    train_neg_types     = loaded_data['train_neg_types']
+    val_neg_types       = loaded_data['val_neg_types']
+
+    in_channels         =  data.x.shape[1]
+    out_channels        = in_channels
+
+    if 'eicu' in dataset:
+        patient_relations = ['http://ehrtoolkit.org/ontology/eICU/has_icd_diagnosis',
+            'http://ehrtoolkit.org/ontology/eICU/has_lab_event',
+            'http://ehrtoolkit.org/ontology/eICU/has_medication']
+    else:
+        patient_relations = ['https://biomedit.ch/rdf/ehr-toolkit/has_diagnosis_code',
+            'https://biomedit.ch/rdf/ehr-toolkit/has_lab_code',
+            'https://biomedit.ch/rdf/ehr-toolkit/has_medication_code']
+
+    from rdflib import OWL, RDFS
+    ontology_relations = [str(OWL.sameAs) ,str(RDFS.subClassOf)]
+
+    model = HNMP(in_channels, out_channels, 
+                    num_edge_types = int(data.edge_type.max())+1, 
+                    num_node_types = int(data.y.max())+1, 
+                    patient_relations = patient_relations, 
+                    ontology_relations = ontology_relations,                 
+                    relation_dict = edge_dict, 
+                    kappa_1    = 1, 
+                    kappa_2    = 1,
+                    num_layers = 1)
+
+    optimizer = geoopt.optim.RiemannianAdam( model.parameters(),
+                                             lr = learning_rate)
+
+    train_concurrent_prediction(model, data,
+                    optimizer,
+                    train_pos_edges, train_pos_types,
+                    train_neg_edges, train_neg_types,
+                    val_pos_edges, val_pos_types,
+                    val_neg_edges, val_neg_types,
+                    epochs=epochs)
 
 
-ontology_relations = [ 'http://www.w3.org/2002/07/owl#sameAs' ,
-    'http://www.w3.org/2000/01/rdf-schema#subClassOf'
-]
-
-model = HNMP(in_channels, out_channels, 
-                num_edge_types = int(data.edge_type.max())+1, 
-                num_node_types = int(data.y.max())+1, 
-                patient_relations = patient_relations, 
-                ontology_relations = ontology_relations,                 
-                relation_dict = edge_dict, 
-                kappa_1    = 1, 
-                kappa_2    = 1,
-                num_layers = 1)
-
-optimizer = geoopt.optim.RiemannianAdam( model.parameters(),lr=0.01)
-
-
-                 """
