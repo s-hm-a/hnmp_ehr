@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from geoopt.manifolds import PoincareBall
 
-from .base import BaseModel
+from base import BaseModel,train_concurrent_prediction
 
 MIN_NORM = 1e-15
 BALL_EPS = {torch.float32: 4e-3, torch.float64: 1e-5}
@@ -125,7 +125,8 @@ class HyperbolicGIE(BaseModel):
         # Attention across embeddings
         cands = torch.cat([lhs1, lhs2, head_exp], dim=1)  # [B,3,dim]
         context = self.context_vec(rels).unsqueeze(1)  # [B,1,dim]
-        att_weights = torch.sum(context * cands * self.scale, dim=-1, keepdim=True)  # [B,3,1]
+        att_weights = torch.sum(context * cands * self.scale, 
+                                dim=-1, keepdim=True)  # [B,3,1]
         att_weights = self.act(att_weights)
         att_q = torch.sum(att_weights * cands, dim=1)  # [B, dim]
 
@@ -136,30 +137,76 @@ class HyperbolicGIE(BaseModel):
         return res, batch_c
 
     def forward(self, x=None, edge_index=None, edge_type=None, num_nodes=None):
-        """
-        Return node embeddings. We ignore x/edges since GIE is a KG embedding model.
-        """
-        all_nodes = torch.arange(self.entity.num_embeddings, device=self.entity.weight.device)
-        queries = torch.stack([all_nodes, torch.zeros_like(all_nodes), all_nodes], dim=1)
+
+        all_nodes = torch.arange(self.entity.num_embeddings)
+        queries = torch.stack([all_nodes, torch.zeros_like(all_nodes),
+                                all_nodes], dim=1)
         node_emb, _ = self.get_queries(queries)
         logits = self.classifier(node_emb)
         return node_emb, logits
 
     def score_edges(self, node_emb, edge_index, edge_type):
-        """Compute negative squared hyperbolic distance"""
+        
         u, v = edge_index
         u_e = node_emb[u]
         v_e = node_emb[v]
-        c = 0.2  # fixed curvature
+        c = self.c
         sqdist = (2 * torch.atanh(
-            torch.clamp(torch.norm(mobius_add(-u_e, v_e, c), dim=-1), 1e-10, 1 - 1e-5)
+            torch.clamp(torch.norm(mobius_add(-u_e, v_e, c), dim=-1), 
+                        1e-10, 1 - 1e-5)
         )) ** 2
         return -sqdist
 
 
 if __name__ == '__main__':
-    """model = HyperbolicGIE(num_entities=data.num_nodes, num_relations=len(rel_dict), 
-                      num_classes=int(data.y.max())+1,dim=64).to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)"""
+
+    import geoopt
+    import pickle
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Script for Ontology-aligned model training.')
+    parser.add_argument('--datafile', type=str, default='mimic4_data.pk', help='Dataset file name')
+    parser.add_argument('--data_path', type=str, default='../data/', help='Path to data directory')
+    parser.add_argument('--learning_rate', type=float, default=1e-2, help='Learning rate for training')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
+    args = parser.parse_args()
+
+    dataset = args.datafile 
+    data_path = args.data_path
+    data_filename = data_path+dataset
+    learning_rate = args.learning_rate
+    epochs = args.epochs
+
+    with open(data_filename, "rb") as f:
+        loaded_data = pickle.load(f)
+
+    edge_dict           = loaded_data["edge_dict"]
+    data                = loaded_data["data"]
+    train_pos_edges     = loaded_data['train_pos_edges']
+    val_pos_edges       = loaded_data['val_pos_edges']
+    train_pos_types     = loaded_data['train_pos_types']
+    val_pos_types       = loaded_data['val_pos_types']
+    train_neg_edges     = loaded_data['train_neg_edges']
+    val_neg_edges       = loaded_data['val_neg_edges']
+    train_neg_types     = loaded_data['train_neg_types']
+    val_neg_types       = loaded_data['val_neg_types']
+
+    in_channels         =  data.x.shape[1]
+
+    model = HyperbolicGIE(num_entities = data.num_nodes, 
+                    num_relations = len(edge_dict), 
+                      num_classes = int(data.y.max())+1,
+                      dim = in_channels) 
+
+    optimizer = geoopt.optim.RiemannianAdam( model.parameters(),lr=0.01)
+    
+    train_concurrent_prediction(model, data,
+                    optimizer,
+                    train_pos_edges, train_pos_types,
+                    train_neg_edges, train_neg_types,
+                    val_pos_edges, val_pos_types,
+                    val_neg_edges, val_neg_types,
+                    epochs=epochs)
+
 

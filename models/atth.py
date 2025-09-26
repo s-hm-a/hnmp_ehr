@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from geoopt.manifolds import PoincareBall
 
-from .base import BaseModel
+from base import BaseModel, train_concurrent_prediction
 
 # Utility functions for hyperbolic operations
 MIN_NORM = 1e-15
@@ -107,8 +107,9 @@ class AttH(BaseModel):
         if num_nodes is None:
             num_nodes = self.entity.num_embeddings
         all_nodes = torch.arange(num_nodes, device=self.entity.weight.device)
-        # Fake queries: relation index 0 is placeholder
-        queries = torch.stack([all_nodes, torch.zeros_like(all_nodes), all_nodes], dim=1)
+        # queries: relation index 0 is placeholder
+        queries = torch.stack([all_nodes, torch.zeros_like(all_nodes), 
+                               all_nodes], dim=1)
         node_emb, _ = self.get_queries(queries)
 
         logits = self.classifier(node_emb)
@@ -116,18 +117,57 @@ class AttH(BaseModel):
         return node_emb, logits
 
     def score_edges(self, node_emb, edge_index, edge_type):
-        u_idx, v_idx = edge_index
-        u = node_emb[u_idx]
-        v = node_emb[v_idx]
-        return -torch.sum((u - v)**2, dim=-1)  # simple negative Euclidean distance
+        u, v = edge_index
+        u_e = node_emb[u]
+        v_e = node_emb[v]
+        c = self.c
+        sqdist = (2 * torch.atanh(
+            torch.clamp(torch.norm(mobius_add(-u_e, v_e, c), dim=-1), 
+                        1e-10, 1 - 1e-5)
+        )) ** 2
+        return  -sqdist
 
 
 if __name__ == "__main__":
-    """
-    model = AttH(num_entities=data.num_nodes, 
-                num_relations=len(edge_dict),
-                num_classes= int(data.y.max())+1, 
-                dim=in_channels)
+
+
+    import geoopt
+    import pickle
+    import argparse
+
+    parser = argparse.ArgumentParser(description='Script for Ontology-aligned model training.')
+    parser.add_argument('--datafile', type=str, default='mimic4_data.pk', help='Dataset file name')
+    parser.add_argument('--data_path', type=str, default='../data/', help='Path to data directory')
+    parser.add_argument('--learning_rate', type=float, default=1e-2, help='Learning rate for training')
+    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
+    args = parser.parse_args()
+
+    dataset = args.datafile 
+    data_path = args.data_path
+    data_filename = data_path+dataset
+    learning_rate = args.learning_rate
+    epochs = args.epochs
+
+    with open(data_filename, "rb") as f:
+        loaded_data = pickle.load(f)
+
+    edge_dict           = loaded_data["edge_dict"]
+    data                = loaded_data["data"]
+    train_pos_edges     = loaded_data['train_pos_edges']
+    val_pos_edges       = loaded_data['val_pos_edges']
+    train_pos_types     = loaded_data['train_pos_types']
+    val_pos_types       = loaded_data['val_pos_types']
+    train_neg_edges     = loaded_data['train_neg_edges']
+    val_neg_edges       = loaded_data['val_neg_edges']
+    train_neg_types     = loaded_data['train_neg_types']
+    val_neg_types       = loaded_data['val_neg_types']
+
+    in_channels         =  data.x.shape[1]
+
+    model = AttH(num_entities = data.num_nodes, 
+                num_relations = len(edge_dict),
+                num_classes = int(data.y.max())+1, 
+                dim = in_channels)
 
     optimizer = geoopt.optim.RiemannianAdam( model.parameters(),lr=0.01)
 
@@ -137,4 +177,4 @@ if __name__ == "__main__":
                     train_neg_edges, train_neg_types,
                     val_pos_edges, val_pos_types,
                     val_neg_edges, val_neg_types,
-                    epochs=100)"""
+                    epochs=epochs)
